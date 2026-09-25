@@ -1615,12 +1615,78 @@ bool HighsMipSolverData::addIncumbent(const std::vector<double>& sol,
       }
       pruned_treeweight += nodequeue.performBounding(upper_limit);
       printDisplayLine(solution_source);
+      if (!in_one_opt_) {
+        in_one_opt_ = true;
+        oneOpt();
+        in_one_opt_ = false;
+      }
     }
   } else if (incumbent.empty())
     // Assigning new incumbent
     incumbent = sol;
 
   return true;
+}
+
+void HighsMipSolverData::oneOpt() {
+  // Shift integer columns of the incumbent, one at a time, in their
+  // objective-improving direction as far as all rows and the column bounds
+  // allow (as the one-opt heuristic in SCIP). Row activities are those of the
+  // incumbent and are updated after every shift.
+  const HighsLp& model = *mipsolver.model_;
+  const HighsInt num_col = model.num_col_;
+  if ((HighsInt)incumbent.size() != num_col) return;
+  const double feastol = mipsolver.options_mip_->mip_feasibility_tolerance;
+  const HighsSparseMatrix& a = model.a_matrix_;
+  std::vector<double> sol = incumbent;
+  std::vector<HighsCDouble> activity(model.num_row_, 0.0);
+  for (HighsInt col = 0; col < num_col; col++)
+    for (HighsInt k = a.start_[col]; k < a.start_[col + 1]; k++)
+      activity[a.index_[k]] += a.value_[k] * sol[col];
+
+  // largest integral shift of col in direction (+1/-1) keeping feasibility
+  auto maxShift = [&](HighsInt col, HighsInt direction) {
+    double shift = direction > 0 ? model.col_upper_[col] - sol[col]
+                                 : sol[col] - model.col_lower_[col];
+    for (HighsInt k = a.start_[col]; k < a.start_[col + 1] && shift > 0; k++) {
+      const double delta = direction * a.value_[k];
+      const HighsInt row = a.index_[k];
+      if (delta > 0 && model.row_upper_[row] != kHighsInf)
+        shift = std::min(
+            shift,
+            double(model.row_upper_[row] - activity[row] + feastol) / delta);
+      else if (delta < 0 && model.row_lower_[row] != -kHighsInf)
+        shift = std::min(
+            shift,
+            double(activity[row] - model.row_lower_[row] + feastol) / -delta);
+    }
+    if (shift == kHighsInf) return 0.0;
+    return std::floor(shift + feastol);
+  };
+
+  std::vector<std::pair<double, HighsInt>> candidates;
+  for (HighsInt col = 0; col < num_col; col++) {
+    const double cost = model.col_cost_[col];
+    if (cost == 0 || model.integrality_[col] == HighsVarType::kContinuous)
+      continue;
+    const double shift = maxShift(col, cost > 0 ? -1 : 1);
+    if (shift >= 1) candidates.emplace_back(-std::abs(cost) * shift, col);
+  }
+  if (candidates.empty()) return;
+  std::sort(candidates.begin(), candidates.end());
+
+  bool improved = false;
+  for (const auto& candidate : candidates) {
+    const HighsInt col = candidate.second;
+    const HighsInt direction = model.col_cost_[col] > 0 ? -1 : 1;
+    const double shift = maxShift(col, direction);
+    if (shift < 1) continue;
+    sol[col] = std::round(sol[col] + direction * shift);
+    for (HighsInt k = a.start_[col]; k < a.start_[col + 1]; k++)
+      activity[a.index_[k]] += direction * shift * a.value_[k];
+    improved = true;
+  }
+  if (improved) trySolution(sol, kSolutionSourceHeuristic);
 }
 
 static std::array<char, 22> convertToPrintString(int64_t val) {

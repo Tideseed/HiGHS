@@ -212,6 +212,10 @@ struct HighsMipSolverData {
   bool checkSolution(const std::vector<double>& solution) const;
   std::vector<std::tuple<HighsInt, HighsInt, double>> getInfeasibleRows(
       const std::vector<double>& solution) const;
+  // one-opt: improve a new incumbent by shifting single integer columns
+  void oneOpt();
+  bool in_one_opt_ = false;
+
   bool trySolution(const std::vector<double>& solution,
                    const int solution_source = kSolutionSourceNone);
   bool rootSeparationRound(HighsMipWorker& worker, HighsSeparation& sepa,
