@@ -197,7 +197,35 @@ class HighsSymmetryDetection {
   std::vector<HighsInt> firstLeavePartition;
   std::vector<HighsInt> bestLeavePartition;
 
-  HighsHashTable<HighsInt, u32> vertexHash;
+  // hash values of the vertices updated during partition refinement, stored
+  // densely by vertex; only a vertex that was updated has a value, as in a
+  // hash table keyed by vertex, but without hashing on every update
+  struct VertexHashes {
+    std::vector<u32> value;
+    std::vector<uint8_t> hasValue;
+    std::vector<HighsInt> updated;
+    void resize(HighsInt numVertices) {
+      value.assign(numVertices, 0);
+      hasValue.assign(numVertices, 0);
+      updated.clear();
+    }
+    u32& operator[](HighsInt v) {
+      if (!hasValue[v]) {
+        hasValue[v] = 1;
+        value[v] = 0;
+        updated.push_back(v);
+      }
+      return value[v];
+    }
+    const u32* find(HighsInt v) const {
+      return hasValue[v] ? &value[v] : nullptr;
+    }
+    void clear() {
+      for (HighsInt v : updated) hasValue[v] = 0;
+      updated.clear();
+    }
+  };
+  VertexHashes vertexHash;
   HighsHashTable<std::tuple<HighsInt, HighsInt, HighsUInt>> firstLeaveGraph;
   HighsHashTable<std::tuple<HighsInt, HighsInt, HighsUInt>> bestLeaveGraph;
 
