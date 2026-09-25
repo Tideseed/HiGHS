@@ -489,7 +489,7 @@ void HighsCliqueTable::queryNeighbourhood(
   // entries than there are candidates, find the neighbours of v by marking the
   // entries of its cliques and scanning the candidates once. The result, and
   // the number of queries counted, are the same as for pairwise queries.
-  const int64_t kPairwiseQueryCost = 16;
+  const int64_t kPairwiseQueryCost = 64;
   int64_t markWork = 0;
   auto addWork = [&](HighsInt cliqueid) {
     markWork += cliques[cliqueid].end - cliques[cliqueid].start;
