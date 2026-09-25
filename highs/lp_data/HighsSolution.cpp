@@ -1172,10 +1172,13 @@ void lpKktCheck(HighsModelStatus& model_status, HighsInfo& info,
     optimality_tolerance = options.kkt_tolerance;
   }
   info.objective_function_value = lp.objectiveValue(solution.col_value);
-  HighsPrimalDualErrors primal_dual_errors;
   const bool get_residuals = !basis.valid;
-  getLpKktFailures(options, lp, solution, basis, info, &primal_dual_errors,
-                   get_residuals);
+  // The glpsol-style errors are only used when writing a solution file, so
+  // don't compute them here: this check runs after every LP solve, including
+  // each LP resolve in the MIP solver
+  getLpKktFailures(options, lp, solution, basis, info, nullptr, get_residuals);
+  HighsPrimalDualErrors primal_dual_errors;
+  getPrimalDualBasisErrors(options, lp, solution, basis, primal_dual_errors);
   if (model_status == HighsModelStatus::kOptimal)
     reportKktFailures(lp, options, info, message);
   // get_residuals is false when there is a valid basis, since
