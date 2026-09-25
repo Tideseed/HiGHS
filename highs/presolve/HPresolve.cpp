@@ -191,6 +191,7 @@ bool HPresolve::okSetupPresolveDataStructures() {
   if (!okReserve(changedColIndices, model->num_col_)) return false;
   if (!okReserve(liftingOpportunities, model->num_row_)) return false;
   if (!okResize(singleEquationChecked, model->num_row_)) return false;
+  recountSingleEquationChecked();
   analysis_.presolveTimerStop(kPresolveClockSetupResize);
   return true;
 }
@@ -647,7 +648,10 @@ void HPresolve::markChangedRow(HighsInt row) {
     changedRowIndices.push_back(row);
     changedRowFlag[row] = true;
   }
-  singleEquationChecked[row] = false;
+  if (singleEquationChecked[row]) {
+    singleEquationChecked[row] = false;
+    --numSingleEquationChecked;
+  }
 }
 
 void HPresolve::markChangedCol(HighsInt col) {
@@ -655,8 +659,12 @@ void HPresolve::markChangedCol(HighsInt col) {
     changedColIndices.push_back(col);
     changedColFlag[col] = true;
   }
-  for (const auto& nz : getColumnVector(col))
+  if (numSingleEquationChecked == 0) return;
+  for (const auto& nz : getColumnVector(col)) {
+    if (!singleEquationChecked[nz.index()]) continue;
     singleEquationChecked[nz.index()] = false;
+    if (--numSingleEquationChecked == 0) break;
+  }
 }
 
 double HPresolve::getMaxAbsColVal(HighsInt col) const {
@@ -1183,6 +1191,7 @@ void HPresolve::shrinkProblem(HighsPostsolveStack& postsolve_stack) {
   if (have_row_names) model->row_names_.resize(model->num_row_);
   changedRowFlag.resize(model->num_row_);
   singleEquationChecked.resize(model->num_row_);
+  recountSingleEquationChecked();
 
   numDeletedRows = 0;
   postsolve_stack.compressIndexMaps(newRowIndex, newColIndex);
@@ -2572,6 +2581,7 @@ bool HPresolve::addToMatrix(
   if (!okResize(rowDeleted, model->num_row_, uint8_t{0})) return false;
   if (!okResize(singleEquationChecked, model->num_row_, uint8_t{0}))
     return false;
+  recountSingleEquationChecked();
 
   // initialise row names
   if (!okResize(model->row_names_, model->num_row_, std::string{}))
@@ -5498,6 +5508,7 @@ HPresolve::Result HPresolve::dualFixing(HighsPostsolveStack& postsolve_stack,
         // Programming, INFORMS Journal on Computing 32(2):473-506.
         HPRESOLVE_CHECKED_CALL(handleSingleEquation(equationRow));
         singleEquationChecked[equationRow] = true;
+        ++numSingleEquationChecked;
         if (colDeleted[col]) return Result::kOk;
       } else if (mipsolver != nullptr && model->col_lower_[col] != -kHighsInf &&
                  model->col_upper_[col] != kHighsInf) {
