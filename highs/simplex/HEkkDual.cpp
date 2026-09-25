@@ -168,7 +168,9 @@ HighsStatus HEkkDual::solve(const bool pass_force_phase2) {
           highsLogDev(
               options.log_options, HighsLogType::kDetailed,
               "Basis is not logical, so compute steepest edge weights\n");
-          ekk_instance_.computeDualSteepestEdgeWeights(true);
+          if (!ekk_instance_.useCachedDualEdgeWeights() &&
+              !ekk_instance_.useCarriedDualEdgeWeights())
+            ekk_instance_.computeDualSteepestEdgeWeights(true);
           status.has_dual_steepest_edge_weights = true;
         }
       }
