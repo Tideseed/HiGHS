@@ -524,9 +524,15 @@ void HighsCliqueTable::queryNeighbourhood(
     // haveCommonClique is false for two literals of the same column
     mark[v.index()] = 0;
     mark[v.complement().index()] = 0;
-    for (HighsInt i = 0; i < N; ++i)
-      if (mark[q[i].index()] == stamp) neighbourhoodInds.push_back(i);
-    numQueries += N;
+    // haveCommonClique doesn't count a query for a literal of the column of v
+    HighsInt numQueried = N;
+    for (HighsInt i = 0; i < N; ++i) {
+      if (mark[q[i].index()] == stamp)
+        neighbourhoodInds.push_back(i);
+      else if (q[i].col == v.col)
+        --numQueried;
+    }
+    numQueries += numQueried;
     return;
   }
 
