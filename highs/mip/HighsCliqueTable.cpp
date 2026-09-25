@@ -484,6 +484,52 @@ void HighsCliqueTable::queryNeighbourhood(
 
   if (numCliques(v) == 0) return;
 
+  // Pairwise queries intersect two hash trees each, which costs far more than
+  // marking one clique entry. Unless the cliques containing v have many more
+  // entries than there are candidates, find the neighbours of v by marking the
+  // entries of its cliques and scanning the candidates once. The result, and
+  // the number of queries counted, are the same as for pairwise queries.
+  const int64_t kPairwiseQueryCost = 16;
+  int64_t markWork = 0;
+  auto addWork = [&](HighsInt cliqueid) {
+    markWork += cliques[cliqueid].end - cliques[cliqueid].start;
+  };
+  invertedHashList[v.index()].for_each(addWork);
+  invertedHashListSizeTwo[v.index()].for_each(addWork);
+  if (markWork <= kPairwiseQueryCost * N) {
+    // thread local, since the clique table may be queried concurrently
+    static thread_local std::vector<uint32_t> mark;
+    static thread_local uint32_t stamp = 0;
+    if (mark.size() < numcliquesvar.size()) {
+      mark.assign(numcliquesvar.size(), 0);
+      stamp = 0;
+    }
+    ++stamp;
+    if (stamp == 0) {
+      std::fill(mark.begin(), mark.end(), 0);
+      stamp = 1;
+    }
+    // entries of deleted (fixed) columns stay in their cliques but are no
+    // longer linked to them, so they must not be marked
+    auto markClique = [&](HighsInt cliqueid) {
+      for (HighsInt k = cliques[cliqueid].start; k != cliques[cliqueid].end;
+           ++k)
+        if (!colDeleted[cliqueentries[k].col])
+          mark[cliqueentries[k].index()] = stamp;
+    };
+    invertedHashList[v.index()].for_each(markClique);
+    invertedHashListSizeTwo[v.index()].for_each(markClique);
+    // a pairwise query of v with itself only finds a common clique among the
+    // cliques that are not of size two
+    // haveCommonClique is false for two literals of the same column
+    mark[v.index()] = 0;
+    mark[v.complement().index()] = 0;
+    for (HighsInt i = 0; i < N; ++i)
+      if (mark[q[i].index()] == stamp) neighbourhoodInds.push_back(i);
+    numQueries += N;
+    return;
+  }
+
   if (!allowParallel ||
       numEntries - sizeTwoCliques.size() * 2 < minEntriesForParallelism) {
     for (HighsInt i = 0; i < N; ++i) {
