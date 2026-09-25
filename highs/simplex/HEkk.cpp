@@ -35,6 +35,8 @@ void HEkk::clear() {
   this->clearEkkDualize();
   this->clearEkkData();
   this->clearEkkDualEdgeWeightData();
+  this->has_carried_dual_edge_weights_ = false;
+  this->cached_dual_edge_weights_.clear();
   this->clearEkkPointers();
   this->basis_.clear();
   this->simplex_nla_.clear();
@@ -294,6 +296,7 @@ void HEkk::invalidateBasisMatrix() {
 void HEkk::invalidateBasis() {
   // Invalidate the basis of the simplex LP, and all its other
   // basis-related properties
+  cacheDualEdgeWeights();
   this->status_.has_basis = false;
   this->invalidateBasisArtifacts();
 }
@@ -315,6 +318,8 @@ void HEkk::updateStatus(LpAction action) {
   assert(!this->status_.is_permuted);
   switch (action) {
     case LpAction::kScale:
+      this->has_carried_dual_edge_weights_ = false;
+      this->cached_dual_edge_weights_.clear();
       this->invalidateBasisMatrix();
       break;
     case LpAction::kNewCosts:
@@ -339,8 +344,10 @@ void HEkk::updateStatus(LpAction action) {
         // Just clear Ekk data
         this->clearEkkData();
       } else {
-        // Clear everything
+        // Clear everything, but keep any carried dual edge weights
+        const bool has_carried = this->has_carried_dual_edge_weights_;
         this->clear();
+        this->has_carried_dual_edge_weights_ = has_carried;
       }
       //    this->invalidateBasisArtifacts();
       break;
@@ -352,8 +359,12 @@ void HEkk::updateStatus(LpAction action) {
       this->clear();
       //    this->invalidateBasis();
       break;
-    case LpAction::kDelRows:
+    case LpAction::kDelRows: {
+      // Clear everything, but keep any carried dual edge weights
+      const bool has_carried = this->has_carried_dual_edge_weights_;
       this->clear();
+      this->has_carried_dual_edge_weights_ = has_carried;
+    }
       //   this->invalidateBasis();
       break;
     case LpAction::kDelRowsBasisOk:
@@ -361,9 +372,13 @@ void HEkk::updateStatus(LpAction action) {
       //      info.lp_ = true;
       break;
     case LpAction::kScaledCol:
+      this->has_carried_dual_edge_weights_ = false;
+      this->cached_dual_edge_weights_.clear();
       this->invalidateBasisMatrix();
       break;
     case LpAction::kScaledRow:
+      this->has_carried_dual_edge_weights_ = false;
+      this->cached_dual_edge_weights_.clear();
       this->invalidateBasisMatrix();
       break;
     case LpAction::kBacktracking:
@@ -1192,6 +1207,7 @@ HighsStatus HEkk::setBasis() {
 }
 
 HighsStatus HEkk::setBasis(const HighsBasis& highs_basis) {
+  cacheDualEdgeWeights();
   // Shouldn't have to check the incoming basis since this is an
   // internal call, but it may be a basis that's set up internally
   // with errors :-) ...
@@ -1303,6 +1319,7 @@ void HEkk::addRows(const HighsLp& lp,
     this->debugNlaCheckInvert("HEkk::addRows - on entry",
                               kHighsDebugLevelExpensive + 1);
   }
+  carryDualEdgeWeightsForNewRows(lp.num_row_ - this->lp_.num_row_);
   // Update the number of rows in the simplex LP so that it's
   // consistent with simplex basis information
   this->lp_.num_row_ = lp.num_row_;
@@ -1313,7 +1330,167 @@ void HEkk::deleteCols(const HighsIndexCollection& index_collection) {
   this->updateStatus(LpAction::kDelCols);
 }
 void HEkk::deleteRows(const HighsIndexCollection& index_collection) {
+  carryDualEdgeWeightsForDeletedRows(index_collection);
   this->updateStatus(LpAction::kDelRows);
+}
+
+void HEkk::carryDualEdgeWeightsForNewRows(const HighsInt num_new_row) {
+  const HighsInt num_col = lp_.num_col_;
+  const HighsInt num_row = lp_.num_row_;
+  if (status_.has_dual_steepest_edge_weights && status_.has_basis &&
+      (HighsInt)basis_.basicIndex_.size() == num_row &&
+      (HighsInt)dual_edge_weight_.size() >= num_row) {
+    // Weights are known for the current basis: record them by variable
+    carried_dual_edge_weight_.assign(num_col + num_row, -1.0);
+    carried_new_row_.assign(num_row, 0);
+    for (HighsInt iRow = 0; iRow < num_row; iRow++)
+      carried_dual_edge_weight_[basis_.basicIndex_[iRow]] =
+          dual_edge_weight_[iRow];
+    has_carried_dual_edge_weights_ = true;
+  } else if (!has_carried_dual_edge_weights_ ||
+             (HighsInt)carried_dual_edge_weight_.size() != num_col + num_row) {
+    has_carried_dual_edge_weights_ = false;
+    return;
+  }
+  // The slacks of new rows are basic: their weights are computed later
+  carried_dual_edge_weight_.resize(num_col + num_row + num_new_row, -1.0);
+  carried_new_row_.resize(num_row + num_new_row, 1);
+}
+
+void HEkk::carryDualEdgeWeightsForDeletedRows(
+    const HighsIndexCollection& index_collection) {
+  const HighsInt num_col = lp_.num_col_;
+  const HighsInt num_row = lp_.num_row_;
+  if (status_.has_dual_steepest_edge_weights && status_.has_basis &&
+      (HighsInt)basis_.basicIndex_.size() == num_row &&
+      (HighsInt)dual_edge_weight_.size() >= num_row) {
+    carried_dual_edge_weight_.assign(num_col + num_row, -1.0);
+    carried_new_row_.assign(num_row, 0);
+    for (HighsInt iRow = 0; iRow < num_row; iRow++)
+      carried_dual_edge_weight_[basis_.basicIndex_[iRow]] =
+          dual_edge_weight_[iRow];
+    has_carried_dual_edge_weights_ = true;
+  }
+  if (!has_carried_dual_edge_weights_ ||
+      (HighsInt)carried_dual_edge_weight_.size() != num_col + num_row ||
+      (HighsInt)carried_new_row_.size() != num_row) {
+    has_carried_dual_edge_weights_ = false;
+    return;
+  }
+  std::vector<uint8_t> deleted(num_row, 0);
+  if (index_collection.is_mask_) {
+    for (HighsInt iRow = 0; iRow < num_row; iRow++)
+      deleted[iRow] = index_collection.mask_[iRow] != 0;
+  } else if (index_collection.is_interval_) {
+    for (HighsInt iRow = index_collection.from_; iRow <= index_collection.to_;
+         iRow++)
+      deleted[iRow] = 1;
+  } else if (index_collection.is_set_) {
+    for (HighsInt k = 0; k < index_collection.set_num_entries_; k++)
+      deleted[index_collection.set_[k]] = 1;
+  } else {
+    has_carried_dual_edge_weights_ = false;
+    return;
+  }
+  // The weights of the remaining basic variables stay valid only if the
+  // slack of every deleted row is basic
+  HighsInt new_row = 0;
+  for (HighsInt iRow = 0; iRow < num_row; iRow++) {
+    const HighsInt iVar = num_col + iRow;
+    if (deleted[iRow]) {
+      if (carried_dual_edge_weight_[iVar] < 0 && !carried_new_row_[iRow]) {
+        has_carried_dual_edge_weights_ = false;
+        return;
+      }
+      continue;
+    }
+    carried_dual_edge_weight_[num_col + new_row] =
+        carried_dual_edge_weight_[iVar];
+    carried_new_row_[new_row] = carried_new_row_[iRow];
+    new_row++;
+  }
+  carried_dual_edge_weight_.resize(num_col + new_row);
+  carried_new_row_.resize(new_row);
+}
+
+void HEkk::cacheDualEdgeWeights() {
+  const HighsInt num_row = lp_.num_row_;
+  const HighsInt num_tot = lp_.num_col_ + num_row;
+  if (!status_.has_dual_steepest_edge_weights || !status_.has_basis ||
+      (HighsInt)basis_.basicIndex_.size() != num_row ||
+      (HighsInt)dual_edge_weight_.size() < num_row || num_row == 0)
+    return;
+  for (const CachedDualEdgeWeights& entry : cached_dual_edge_weights_)
+    if (entry.hash == basis_.hash && (HighsInt)entry.weight.size() == num_tot)
+      return;
+  // keep at most a few entries, and fewer for large LPs
+  const HighsInt max_entries = num_tot > 1000000 ? 1 : 4;
+  if ((HighsInt)cached_dual_edge_weights_.size() < max_entries) {
+    cached_dual_edge_weights_.emplace_back();
+    next_cached_dual_edge_weights_ = cached_dual_edge_weights_.size() - 1;
+  } else {
+    next_cached_dual_edge_weights_ =
+        (next_cached_dual_edge_weights_ + 1) % max_entries;
+  }
+  CachedDualEdgeWeights& entry =
+      cached_dual_edge_weights_[next_cached_dual_edge_weights_];
+  entry.hash = basis_.hash;
+  entry.weight.assign(num_tot, -1.0);
+  for (HighsInt iRow = 0; iRow < num_row; iRow++)
+    entry.weight[basis_.basicIndex_[iRow]] = dual_edge_weight_[iRow];
+}
+
+bool HEkk::useCachedDualEdgeWeights() {
+  const HighsInt num_row = lp_.num_row_;
+  const HighsInt num_tot = lp_.num_col_ + num_row;
+  for (const CachedDualEdgeWeights& entry : cached_dual_edge_weights_) {
+    if (entry.hash != basis_.hash || (HighsInt)entry.weight.size() != num_tot)
+      continue;
+    // the hash identifies the set of basic variables, but check it
+    bool same_basis = true;
+    for (HighsInt iRow = 0; iRow < num_row; iRow++) {
+      if (entry.weight[basis_.basicIndex_[iRow]] <= 0) {
+        same_basis = false;
+        break;
+      }
+    }
+    if (!same_basis) continue;
+    for (HighsInt iRow = 0; iRow < num_row; iRow++)
+      dual_edge_weight_[iRow] = entry.weight[basis_.basicIndex_[iRow]];
+    return true;
+  }
+  return false;
+}
+
+bool HEkk::useCarriedDualEdgeWeights() {
+  if (!has_carried_dual_edge_weights_) return false;
+  has_carried_dual_edge_weights_ = false;
+  const HighsInt num_col = lp_.num_col_;
+  const HighsInt num_row = lp_.num_row_;
+  if ((HighsInt)carried_dual_edge_weight_.size() != num_col + num_row ||
+      (HighsInt)carried_new_row_.size() != num_row)
+    return false;
+  // Every basic variable must either have a carried weight or be the slack
+  // of a row added since the weights were carried
+  std::vector<HighsInt> new_basic_row;
+  for (HighsInt iRow = 0; iRow < num_row; iRow++) {
+    const HighsInt iVar = basis_.basicIndex_[iRow];
+    const double weight = carried_dual_edge_weight_[iVar];
+    if (weight > 0) {
+      dual_edge_weight_[iRow] = weight;
+    } else if (iVar >= num_col && carried_new_row_[iVar - num_col]) {
+      new_basic_row.push_back(iRow);
+    } else {
+      return false;
+    }
+  }
+  // Computing the weights of all rows is not much more expensive
+  if (2 * (HighsInt)new_basic_row.size() > num_row) return false;
+  HVector row_ep;
+  row_ep.setup(num_row);
+  for (HighsInt iRow : new_basic_row)
+    dual_edge_weight_[iRow] = computeDualSteepestEdgeWeight(iRow, row_ep);
+  return true;
 }
 
 void HEkk::unscaleSimplex(const HighsLp& incumbent_lp) {
@@ -3496,6 +3673,9 @@ HighsStatus HEkk::returnFromEkkSolve(const HighsStatus return_status) {
 
 HighsStatus HEkk::returnFromSolve(const HighsStatus return_status) {
   // Always called before returning from HEkkPrimal/Dual::solve()
+  // The final basis of a solve is typically stored by the MIP solver and
+  // restored later, so keep its dual steepest edge weights
+  cacheDualEdgeWeights();
   if (solve_bailout_) {
     // If bailout has already been decided: check that it's for one of
     // these reasons

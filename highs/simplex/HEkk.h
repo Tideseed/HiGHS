@@ -190,6 +190,30 @@ class HEkk {
   std::vector<double> dual_edge_weight_;
   std::vector<double> scattered_dual_edge_weight_;
 
+  // Dual steepest edge weights by variable (column j, or num_col + row i),
+  // carried across adding and deleting rows. The weight of a basic variable
+  // is unchanged when rows whose slacks are basic are added or deleted, so
+  // only the weights of added rows need to be computed in the next solve
+  std::vector<double> carried_dual_edge_weight_;
+  std::vector<uint8_t> carried_new_row_;
+  bool has_carried_dual_edge_weights_ = false;
+  void carryDualEdgeWeightsForNewRows(const HighsInt num_new_row);
+  void carryDualEdgeWeightsForDeletedRows(
+      const HighsIndexCollection& index_collection);
+  bool useCarriedDualEdgeWeights();
+
+  // Dual steepest edge weights by variable for recently replaced bases, keyed
+  // by basis hash, so that restoring a basis (as in diving and strong
+  // branching) doesn't require all weights to be recomputed
+  struct CachedDualEdgeWeights {
+    uint64_t hash;
+    std::vector<double> weight;
+  };
+  std::vector<CachedDualEdgeWeights> cached_dual_edge_weights_;
+  HighsInt next_cached_dual_edge_weights_ = 0;
+  void cacheDualEdgeWeights();
+  bool useCachedDualEdgeWeights();
+
   bool simplex_in_scaled_space_;
   HighsSparseMatrix ar_matrix_;
   HighsSparseMatrix scaled_a_matrix_;
