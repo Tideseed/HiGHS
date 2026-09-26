@@ -540,14 +540,16 @@ class HighsHashTree {
           if (j == leaf2->size || get_first_chunk16(leaf2->hashes[j]) != pos)
             break;
         } else {
-          if (leaf1->entries[i].key() == leaf2->entries[j].key())
-            return &leaf1->entries[i];
+          // equal hashes do not imply equal keys, and several entries of
+          // either leaf can have the same hash, so compare this entry of
+          // leaf1 with every entry of leaf2 that has the same hash
+          for (int k = j; k < leaf2->size && leaf2->hashes[k] == leaf1->hashes[i];
+               ++k)
+            if (leaf1->entries[i].key() == leaf2->entries[k].key())
+              return &leaf1->entries[i];
 
           ++i;
           if (i == leaf1->size || get_first_chunk16(leaf1->hashes[i]) != pos)
-            break;
-          ++j;
-          if (j == leaf2->size || get_first_chunk16(leaf2->hashes[j]) != pos)
             break;
         }
       };
