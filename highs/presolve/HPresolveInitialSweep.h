@@ -46,6 +46,9 @@ class HPresolveInitialSweep {
   Result singletonRow(HighsPostsolveStack& postsolve_stack, HighsInt row,
                       HighsInt col, double val);
   double getMaxAbsColVal(HighsInt col) const;
+  // getMaxAbsColVal is called once per singleton row, so cache it per column;
+  // the matrix is not modified until the singleton rows have been processed
+  mutable std::vector<double> max_abs_col_val_;
   bool isRedundant(HighsInt row, double sumLower, double sumUpper) const;
 };
 
