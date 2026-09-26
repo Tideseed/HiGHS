@@ -5252,49 +5252,65 @@ HPresolve::Result HPresolve::dualFixing(HighsPostsolveStack& postsolve_stack,
     // overwritten by subsequent findNonZero calls, which would produce
     // undefined behavior
     storeRow(row);
-    for (const auto& rowNz : getStoredRow()) {
-      // skip column index that was passed to this lambda
-      if (rowNz.index() == col) continue;
+    // Two orientations, tried in this order so that the reductions made
+    // previously are unchanged:
+    // 0) the row is redundant when the binary variable is at its lower bound
+    //    and the bound of col is implied when it is at its upper bound, so
+    //    col = otherColBound + (colBound - otherColBound) * binary
+    // 1) the row is redundant when the binary variable is at its upper bound
+    //    and the bound of col is implied when it is at its lower bound (e.g.
+    //    sum_j x_j <= M y with at most M binaries x_j), so
+    //    col = colBound + (otherColBound - colBound) * binary
+    for (HighsInt orientation = 0; orientation < 2; ++orientation) {
+      const double redundantValue = orientation == 0 ? 0.0 : 1.0;
+      const double impliedValue = 1.0 - redundantValue;
+      for (const auto& rowNz : getStoredRow()) {
+        // skip column index that was passed to this lambda
+        if (rowNz.index() == col) continue;
 
-      // only consider non-fixed binary variables
-      if (model->integrality_[rowNz.index()] != HighsVarType::kInteger ||
-          model->col_lower_[rowNz.index()] != 0.0 ||
-          model->col_upper_[rowNz.index()] != 1.0)
-        continue;
+        // only consider non-fixed binary variables
+        if (model->integrality_[rowNz.index()] != HighsVarType::kInteger ||
+            model->col_lower_[rowNz.index()] != 0.0 ||
+            model->col_upper_[rowNz.index()] != 1.0)
+          continue;
 
-      // skip binary variable if setting it to its lower bound does not make the
-      // row redundant
-      if ((rhsFinite && impliedRowBounds.getResidualSumUpperOrig(
-                            row, rowNz.index(), rowNz.value()) >
-                            model->row_upper_[row] + primal_feastol) ||
-          (lhsFinite && impliedRowBounds.getResidualSumLowerOrig(
-                            row, rowNz.index(), rowNz.value()) <
-                            model->row_lower_[row] - primal_feastol))
-        continue;
+        // skip binary variable if setting it to redundantValue does not make
+        // the row redundant
+        if ((rhsFinite &&
+             impliedRowBounds.getResidualSumUpperOrig(row, rowNz.index(),
+                                                      rowNz.value()) +
+                     rowNz.value() * redundantValue >
+                 model->row_upper_[row] + primal_feastol) ||
+            (lhsFinite &&
+             impliedRowBounds.getResidualSumLowerOrig(row, rowNz.index(),
+                                                      rowNz.value()) +
+                     rowNz.value() * redundantValue <
+                 model->row_lower_[row] - primal_feastol))
+          continue;
 
-      // now compute the implied lower bound (direction = 1) or implied upper
-      // bound (direction = -1) provided that the binary variable is set to its
-      // upper bound.
-      double bestBound =
-          direction > 0
-              ? computeImpliedLowerBound(col, rowNz.index(),
-                                         model->col_upper_[rowNz.index()])
-              : -computeImpliedUpperBound(col, rowNz.index(),
-                                          model->col_upper_[rowNz.index()]);
+        // now compute the implied lower bound (direction = 1) or implied
+        // upper bound (direction = -1) provided that the binary variable is
+        // set to impliedValue
+        double bestBound =
+            direction > 0
+                ? computeImpliedLowerBound(col, rowNz.index(), impliedValue)
+                : -computeImpliedUpperBound(col, rowNz.index(), impliedValue);
 
-      // check if lower / upper bound is implied
-      if (bestBound >= direction * colBound - primal_feastol) {
-        // substitute variable
-        double offset = otherColBound;
-        double scale = colBound - otherColBound;
-        postsolve_stack.doubletonEquation(
-            -1, col, rowNz.index(), 1.0, -scale, offset, model->col_lower_[col],
-            model->col_upper_[col], 0.0, false, false,
-            HighsPostsolveStack::RowType::kEq, HighsEmptySlice());
-        markColDeleted(col);
-        substitute(col, rowNz.index(), offset, scale);
-        HPRESOLVE_CHECKED_CALL(checkLimits(postsolve_stack));
-        break;
+        // check if lower / upper bound is implied
+        if (bestBound >= direction * colBound - primal_feastol) {
+          // substitute variable
+          double offset = orientation == 0 ? otherColBound : colBound;
+          double scale = orientation == 0 ? colBound - otherColBound
+                                          : otherColBound - colBound;
+          postsolve_stack.doubletonEquation(
+              -1, col, rowNz.index(), 1.0, -scale, offset,
+              model->col_lower_[col], model->col_upper_[col], 0.0, false,
+              false, HighsPostsolveStack::RowType::kEq, HighsEmptySlice());
+          markColDeleted(col);
+          substitute(col, rowNz.index(), offset, scale);
+          HPRESOLVE_CHECKED_CALL(checkLimits(postsolve_stack));
+          return Result::kOk;
+        }
       }
     }
     return Result::kOk;
