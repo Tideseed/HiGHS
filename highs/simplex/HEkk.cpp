@@ -1441,6 +1441,9 @@ void HEkk::cacheDualEdgeWeights() {
 }
 
 bool HEkk::useCachedDualEdgeWeights() {
+#if defined(HIGHS_LAB_DSE_MODE) && HIGHS_LAB_DSE_MODE == 2
+  return false;  // diagnostic build: carry-only
+#endif
   const HighsInt num_row = lp_.num_row_;
   const HighsInt num_tot = lp_.num_col_ + num_row;
   for (const CachedDualEdgeWeights& entry : cached_dual_edge_weights_) {
@@ -1463,6 +1466,10 @@ bool HEkk::useCachedDualEdgeWeights() {
 }
 
 bool HEkk::useCarriedDualEdgeWeights() {
+#if defined(HIGHS_LAB_DSE_MODE) && HIGHS_LAB_DSE_MODE == 1
+  has_carried_dual_edge_weights_ = false;
+  return false;  // diagnostic build: cache-only
+#endif
   if (!has_carried_dual_edge_weights_) return false;
   has_carried_dual_edge_weights_ = false;
   const HighsInt num_col = lp_.num_col_;
