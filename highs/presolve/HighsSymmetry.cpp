@@ -1125,6 +1125,7 @@ void HighsSymmetryDetection::loadModelAsGraph(const HighsLp& model,
 
   cellInRefinementQueue.resize(numVertices);
   vertexToCell.resize(numVertices);
+  vertexHash.resize(numVertices);
   refinementQueue.reserve(numVertices);
   currNodeCertificate.reserve(numVertices);
 
