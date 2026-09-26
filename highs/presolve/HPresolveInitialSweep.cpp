@@ -119,10 +119,12 @@ HPresolveInitialSweep::Result HPresolveInitialSweep::emptyRow(
 }
 
 double HPresolveInitialSweep::getMaxAbsColVal(HighsInt col) const {
+  if (max_abs_col_val_[col] >= 0) return max_abs_col_val_[col];
   double maxVal = 0.0;
   for (HighsInt iEl = model_->a_matrix_.start_[col];
        iEl < model_->a_matrix_.start_[col + 1]; iEl++)
     maxVal = std::max(std::abs(model_->a_matrix_.value_[iEl]), maxVal);
+  max_abs_col_val_[col] = maxVal;
   return maxVal;
 }
 
@@ -163,6 +165,7 @@ HPresolveInitialSweep::Result HPresolveInitialSweep::singletonRow(
 
 HPresolveInitialSweep::Result HPresolveInitialSweep::run(
     HighsPostsolveStack& postsolve_stack) {
+  max_abs_col_val_.assign(model_->num_col_, -1.0);
   const bool have_col_names = model_->col_names_.size() > 0;
   const bool have_row_names = model_->row_names_.size() > 0;
   const HighsInt original_num_col = model_->num_col_;
