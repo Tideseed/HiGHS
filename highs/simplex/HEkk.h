@@ -190,6 +190,19 @@ class HEkk {
   std::vector<double> dual_edge_weight_;
   std::vector<double> scattered_dual_edge_weight_;
 
+
+  // Dual steepest edge weights by variable for recently replaced bases, keyed
+  // by basis hash, so that restoring a basis (as in diving and strong
+  // branching) doesn't require all weights to be recomputed
+  struct CachedDualEdgeWeights {
+    uint64_t hash;
+    std::vector<double> weight;
+  };
+  std::vector<CachedDualEdgeWeights> cached_dual_edge_weights_;
+  HighsInt next_cached_dual_edge_weights_ = 0;
+  void cacheDualEdgeWeights();
+  bool useCachedDualEdgeWeights();
+
   bool simplex_in_scaled_space_;
   HighsSparseMatrix ar_matrix_;
   HighsSparseMatrix scaled_a_matrix_;
