@@ -35,6 +35,7 @@ void HEkk::clear() {
   this->clearEkkDualize();
   this->clearEkkData();
   this->clearEkkDualEdgeWeightData();
+  this->cached_dual_edge_weights_.clear();
   this->clearEkkPointers();
   this->basis_.clear();
   this->simplex_nla_.clear();
@@ -294,6 +295,7 @@ void HEkk::invalidateBasisMatrix() {
 void HEkk::invalidateBasis() {
   // Invalidate the basis of the simplex LP, and all its other
   // basis-related properties
+  cacheDualEdgeWeights();
   this->status_.has_basis = false;
   this->invalidateBasisArtifacts();
 }
@@ -315,6 +317,7 @@ void HEkk::updateStatus(LpAction action) {
   assert(!this->status_.is_permuted);
   switch (action) {
     case LpAction::kScale:
+      this->cached_dual_edge_weights_.clear();
       this->invalidateBasisMatrix();
       break;
     case LpAction::kNewCosts:
@@ -361,9 +364,11 @@ void HEkk::updateStatus(LpAction action) {
       //      info.lp_ = true;
       break;
     case LpAction::kScaledCol:
+      this->cached_dual_edge_weights_.clear();
       this->invalidateBasisMatrix();
       break;
     case LpAction::kScaledRow:
+      this->cached_dual_edge_weights_.clear();
       this->invalidateBasisMatrix();
       break;
     case LpAction::kBacktracking:
@@ -1192,6 +1197,7 @@ HighsStatus HEkk::setBasis() {
 }
 
 HighsStatus HEkk::setBasis(const HighsBasis& highs_basis) {
+  cacheDualEdgeWeights();
   // Shouldn't have to check the incoming basis since this is an
   // internal call, but it may be a basis that's set up internally
   // with errors :-) ...
@@ -1314,6 +1320,55 @@ void HEkk::deleteCols(const HighsIndexCollection& index_collection) {
 }
 void HEkk::deleteRows(const HighsIndexCollection& index_collection) {
   this->updateStatus(LpAction::kDelRows);
+}
+
+void HEkk::cacheDualEdgeWeights() {
+  const HighsInt num_row = lp_.num_row_;
+  const HighsInt num_tot = lp_.num_col_ + num_row;
+  if (!status_.has_dual_steepest_edge_weights || !status_.has_basis ||
+      (HighsInt)basis_.basicIndex_.size() != num_row ||
+      (HighsInt)dual_edge_weight_.size() < num_row || num_row == 0)
+    return;
+  for (const CachedDualEdgeWeights& entry : cached_dual_edge_weights_)
+    if (entry.hash == basis_.hash && (HighsInt)entry.weight.size() == num_tot)
+      return;
+  // keep at most a few entries, and fewer for large LPs
+  const HighsInt max_entries = num_tot > 1000000 ? 1 : 4;
+  if ((HighsInt)cached_dual_edge_weights_.size() < max_entries) {
+    cached_dual_edge_weights_.emplace_back();
+    next_cached_dual_edge_weights_ = cached_dual_edge_weights_.size() - 1;
+  } else {
+    next_cached_dual_edge_weights_ =
+        (next_cached_dual_edge_weights_ + 1) % max_entries;
+  }
+  CachedDualEdgeWeights& entry =
+      cached_dual_edge_weights_[next_cached_dual_edge_weights_];
+  entry.hash = basis_.hash;
+  entry.weight.assign(num_tot, -1.0);
+  for (HighsInt iRow = 0; iRow < num_row; iRow++)
+    entry.weight[basis_.basicIndex_[iRow]] = dual_edge_weight_[iRow];
+}
+
+bool HEkk::useCachedDualEdgeWeights() {
+  const HighsInt num_row = lp_.num_row_;
+  const HighsInt num_tot = lp_.num_col_ + num_row;
+  for (const CachedDualEdgeWeights& entry : cached_dual_edge_weights_) {
+    if (entry.hash != basis_.hash || (HighsInt)entry.weight.size() != num_tot)
+      continue;
+    // the hash identifies the set of basic variables, but check it
+    bool same_basis = true;
+    for (HighsInt iRow = 0; iRow < num_row; iRow++) {
+      if (entry.weight[basis_.basicIndex_[iRow]] <= 0) {
+        same_basis = false;
+        break;
+      }
+    }
+    if (!same_basis) continue;
+    for (HighsInt iRow = 0; iRow < num_row; iRow++)
+      dual_edge_weight_[iRow] = entry.weight[basis_.basicIndex_[iRow]];
+    return true;
+  }
+  return false;
 }
 
 void HEkk::unscaleSimplex(const HighsLp& incumbent_lp) {
@@ -3496,6 +3551,9 @@ HighsStatus HEkk::returnFromEkkSolve(const HighsStatus return_status) {
 
 HighsStatus HEkk::returnFromSolve(const HighsStatus return_status) {
   // Always called before returning from HEkkPrimal/Dual::solve()
+  // The final basis of a solve is typically stored by the MIP solver and
+  // restored later, so keep its dual steepest edge weights
+  cacheDualEdgeWeights();
   if (solve_bailout_) {
     // If bailout has already been decided: check that it's for one of
     // these reasons
