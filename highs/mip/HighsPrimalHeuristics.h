@@ -50,6 +50,10 @@ class HighsPrimalHeuristics {
 
   void RENS(HighsMipWorker& worker, const std::vector<double>& relaxationsol);
 
+  // fix integer columns to the bound with fewer locks (most locked first),
+  // propagating after each fixing, then solve the remaining sub-MIP
+  void locks(HighsMipWorker& worker);
+
   void RINS(HighsMipWorker& worker, const std::vector<double>& relaxationsol);
 
   void feasibilityPump(HighsMipWorker& worker);

@@ -665,6 +665,102 @@ retry:
   worker.getHeurLpIterations() += heur.getLocalLpIterations();
 }
 
+void HighsPrimalHeuristics::locks(HighsMipWorker& worker) {
+  // only in the main MIP: sub-MIPs already come from other heuristics
+  if (mipsolver.submip || worker.getGlobalDomain().infeasible()) return;
+  const HighsLp& model = *mipsolver.model_;
+  const HighsSparseMatrix& a = model.a_matrix_;
+
+  // lock counts: rows that may become violated when the column increases
+  // (up-locks) or decreases (down-locks)
+  std::vector<HighsInt> upLocks(model.num_col_, 0), downLocks(model.num_col_, 0);
+  for (HighsInt col = 0; col < model.num_col_; col++) {
+    for (HighsInt k = a.start_[col]; k < a.start_[col + 1]; k++) {
+      const HighsInt row = a.index_[k];
+      const bool hasUpper = model.row_upper_[row] != kHighsInf;
+      const bool hasLower = model.row_lower_[row] != -kHighsInf;
+      if (a.value_[k] > 0) {
+        upLocks[col] += hasUpper;
+        downLocks[col] += hasLower;
+      } else {
+        upLocks[col] += hasLower;
+        downLocks[col] += hasUpper;
+      }
+    }
+  }
+
+  HighsPseudocost pscost(worker.getPseudocost());
+  HighsSearch heur(worker, pscost);
+  HighsDomain& localdom = heur.getLocalDomain();
+  heur.setHeuristic(true);
+
+  std::vector<HighsInt> order;
+  for (HighsInt col : intcols)
+    if (!worker.getGlobalDomain().isFixed(col)) order.push_back(col);
+  if (order.empty()) return;
+  // most locked columns first; ties broken by a hash for reproducibility
+  pdqsort(order.begin(), order.end(), [&](HighsInt i, HighsInt j) {
+    return std::make_pair(-std::max(upLocks[i], downLocks[i]),
+                          HighsHashHelpers::hash(uint64_t(i))) <
+           std::make_pair(-std::max(upLocks[j], downLocks[j]),
+                          HighsHashHelpers::hash(uint64_t(j)));
+  });
+
+  HighsLpRelaxation heurlp(worker.getLpRelaxation());
+  heurlp.setMipWorker(worker);
+  heurlp.setProfiling(mipsolver.profiling_);
+  heurlp.setObjectiveLimit(worker.upper_limit);
+  heurlp.setAdjustSymmetricBranchingCol(false);
+  heur.setLpRelaxation(&heurlp);
+  heurlp.getLpSolver().changeColsBounds(0, mipsolver.numCol() - 1,
+                                        localdom.col_lower_.data(),
+                                        localdom.col_upper_.data());
+  localdom.clearChangedCols();
+  heur.createNewNode();
+
+  const double maxfixingrate = determineTargetFixingRate(worker);
+  HeuristicNeighbourhood neighbourhood(mipsolver, localdom);
+  double fixingrate = 0.0;
+  for (HighsInt col : order) {
+    if (localdom.col_lower_[col] == localdom.col_upper_[col]) continue;
+    // fix to the bound in the direction with fewer locks (the cheaper bound
+    // on ties)
+    const bool toUpper =
+        upLocks[col] < downLocks[col] ||
+        (upLocks[col] == downLocks[col] && model.col_cost_[col] < 0);
+    const double value =
+        toUpper ? localdom.col_upper_[col] : localdom.col_lower_[col];
+    if (std::abs(value) == kHighsInf) continue;
+    if (toUpper)
+      heur.branchUpwards(col, value, value - 0.5);
+    else
+      heur.branchDownwards(col, value, value + 0.5);
+    localdom.propagate();
+    if (localdom.infeasible()) {
+      localdom.conflictAnalysis(worker.getConflictPool(),
+                                worker.getGlobalDomain(),
+                                worker.getPseudocost());
+      break;
+    }
+    fixingrate = neighbourhood.getFixingRate();
+    if (fixingrate >= maxfixingrate) break;
+  }
+  if (!heur.hasNode() || localdom.infeasible()) {
+    worker.getHeurLpIterations() += heur.getLocalLpIterations();
+    return;
+  }
+  fixingrate = neighbourhood.getFixingRate();
+  if (fixingrate < 0.1) {
+    worker.getHeurLpIterations() += heur.getLocalLpIterations();
+    return;
+  }
+  heurlp.flushDomain(localdom);
+  solveSubMip(worker, heurlp.getLp(), heurlp.getLpSolver().getBasis(),
+              fixingrate, localdom.col_lower_, localdom.col_upper_, 500,
+              200 + mipsolver.mipdata_->num_nodes / 20, 12);
+  worker.getHeurLpIterations() += heur.getLocalLpIterations();
+}
+
 void HighsPrimalHeuristics::RINS(HighsMipWorker& worker,
                                  const std::vector<double>& relaxationsol) {
   // return if domain is infeasible

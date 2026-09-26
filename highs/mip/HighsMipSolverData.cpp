@@ -2418,6 +2418,12 @@ restart:
     }
 
     if (checkLimits()) return clockOff(profiling);
+    if (upper_limit == kHighsInf || moreHeuristicsAllowed()) {
+      heuristics.locks(worker);
+      heuristics.flushStatistics(mipsolver, worker);
+    }
+
+    if (checkLimits()) return clockOff(profiling);
     // if there are new global bound changes we re-evaluate the LP and do one
     // more separation round
     separate = !getDomain().getChangedCols().empty();
