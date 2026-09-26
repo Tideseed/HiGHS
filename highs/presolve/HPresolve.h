@@ -122,6 +122,13 @@ class HPresolve {
   // flags to skip repeated single-equation handling (dual fixing) on unchanged
   // rows
   std::vector<HighsBool> singleEquationChecked;
+  // number of rows with singleEquationChecked set, so that marking a changed
+  // column can skip clearing the flags of its rows when none is set
+  HighsInt numSingleEquationChecked = 0;
+  void recountSingleEquationChecked() {
+    numSingleEquationChecked = static_cast<HighsInt>(std::count(
+        singleEquationChecked.begin(), singleEquationChecked.end(), 1));
+  }
 
   std::vector<uint16_t> numProbes;
 
